@@ -1,0 +1,106 @@
+---
+format: gfm
+cache: true
+message: false
+warning: false
+title: "Road traffic casualties"
+---
+
+```{r}
+#| include: false
+#| label: setup
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+
+```{r}
+library(tidyverse)
+library(sf)
+remotes::install_dev("stats19")
+library(stats19)
+
+```
+
+Data was obtained from the DfT's STATS19 data releases using the `stats19` R package. The data is available for download from the [DfT website](https://data.gov.uk/dataset/road-accidents-safety-data). The data is available in two forms: as a single file for each year, and as a single file for each type of data (e.g. collisions, casualties, vehicles) for all years. The latter is more convenient for analysis, but the former is more convenient for downloading. The `stats19` package provides functions to download the data in both forms.
+
+The last 5 years of data for the 'collisions' and 'casualties' tables were downloaded in the first instance. They have the following column names:
+
+
+```{r}
+collisions = get_stats19("collision", year = "5-years")
+casualties = get_stats19("casualty", year = "5-years")
+names(collisions)
+names(casualties)
+```
+
+We'll join the casualties and collisions tables together, and then filter to only include pedestrian and cycling casualties.
+
+```{r}
+cas_types = casualties %>%
+  select(accident_index, casualty_type, casualty_severity) %>%
+  mutate(n = 1) %>%
+  group_by(accident_index, casualty_type, casualty_severity) %>%
+  summarise(n = sum(n)) %>%
+  tidyr::spread(casualty_type, n, fill = 0)
+cas_joined = left_join(collisions, cas_types, by = "accident_index")
+```
+
+Let's plot the result:
+
+```{r}
+crashes_dates = cas_joined %>% 
+  mutate(month = lubridate::round_date(date, "month")) %>%
+  group_by(month, casualty_severity) %>% 
+  summarise(
+    walking = sum(Pedestrian),
+    cycling = sum(Cyclist),
+    passenger = sum(`Car occupant`)
+    ) %>% 
+  tidyr::gather(mode, casualties, -casualty_severity, -month)
+ggplot(crashes_dates, aes(month, casualties)) +
+  geom_line(aes(colour = mode)) +
+  ylab("Casualties per day") +
+  facet_grid(casualty_severity ~ ., scales = "free_y") 
+```
+
+To get the data in geographic form and plot results for a particular road, we can do the following:
+
+```{r}
+collisions_sf = format_sf(collisions)
+collisions_sf = st_transform(collisions_sf, "EPSG:4326")
+cas_sf = left_join(collisions_sf, cas_types, by = "accident_index")
+osm_data_leeds = osmextract::oe_get("Leeds")
+scott_hall_road = osm_data_leeds |>
+  filter(name == "Scott Hall Road") 
+# plot(scott_hall_road)
+scott_hall_buffer = st_buffer(st_union(scott_hall_road), 30)
+crashes_scott_hall = cas_sf[scott_hall_buffer, ]
+ggplot(crashes_scott_hall) +
+  geom_sf(aes(colour = casualty_severity)) +
+  geom_sf(data = scott_hall_buffer, fill = NA) +
+  facet_wrap(~casualty_severity) +
+  theme_void()
+```
+
+We can output the data as follows:
+
+```{r}
+st_write(crashes_scott_hall, "crashes_scott_hall.geojson", delete_dsn = TRUE)
+```
+
+
+
+
+<!-- Testing on the raw data -->
+
+```{r}
+#| echo: false
+#| eval: false
+collisions_all = read_csv("https://data.dft.gov.uk/road-accidents-safety-data/dft-road-casualty-statistics-collision-1979-latest-published-year.csv")
+names(collisions_all)
+head(collisions_all$accident_severity)
+casualties_all = read_csv("https://data.dft.gov.uk/road-accidents-safety-data/dft-road-casualty-statistics-casualty-1979-latest-published-year.csv")
+table(casualties_all$casualty_class)
+head(names(crashes_all))
+```
+
